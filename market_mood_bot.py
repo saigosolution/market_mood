@@ -22,61 +22,53 @@ class MarketMoodBot:
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            mood_data = {'mmi': None, 'mood': None}
-            
-            # Extract MMI value and mood from the page text
             page_text = soup.get_text()
             
-            # Extract MMI value using regex - look for patterns like "52.92" or "47.01"
+            mood_data = {'mmi': None, 'mood': None, 'source': 'TickerTape'}
+            
             import re
             
-            # Look for MMI value - typically appears as a decimal number
-            mmi_patterns = [
-                r'MMI changed from\s*\d+\.\d+\s*(\d+\.\d+)',  # From the "MMI changed from X Y" pattern
-                r'(\d+\.\d+)(?=\s*NIFTY returned)',  # Number before "NIFTY returned"
-                r'MMI.*?(\d+\.\d+)',  # Any decimal after MMI mention
-            ]
+            # Extract MMI value - look for the pattern "MMI changed from X Y"
+            mmi_pattern = r'MMI changed from\s+[\d\.]+\s+([\d\.]+)'
+            match = re.search(mmi_pattern, page_text)
+            if match:
+                mood_data['mmi'] = match.group(1)
             
-            for pattern in mmi_patterns:
-                match = re.search(pattern, page_text)
+            # If above pattern doesn't work, try alternative patterns
+            if not mood_data['mmi']:
+                # Look for number before "NIFTY returned"
+                nifty_pattern = r'([\d\.]+)\s+NIFTY returned'
+                match = re.search(nifty_pattern, page_text)
                 if match:
                     mood_data['mmi'] = match.group(1)
-                    break
             
-            # Extract mood - look for fear/greed indicators
-            mood_patterns = [
-                r'MMI is in the (\w+) zone',  # "MMI is in the greed zone"
-                r'market is in the (\w+) zone',  # "market is in the greed zone"
-                r'(fear|greed|neutral)(?:\s+zone)?',  # Direct fear/greed mentions
-            ]
+            # Extract mood from "MMI is in the X zone"
+            mood_pattern = r'MMI is in the (\w+) zone'
+            match = re.search(mood_pattern, page_text, re.IGNORECASE)
+            if match:
+                mood_data['mood'] = match.group(1).title()
             
-            for pattern in mood_patterns:
-                match = re.search(pattern, page_text, re.IGNORECASE)
-                if match:
-                    mood_value = match.group(1).lower()
-                    if mood_value in ['fear', 'greed', 'neutral']:
-                        mood_data['mood'] = mood_value.title()
-                        break
-            
-            # Fallback: if no specific mood found, determine from MMI value
-            if mood_data['mmi'] and not mood_data['mood']:
-                mmi_val = float(mood_data['mmi'])
-                if mmi_val < 25:
-                    mood_data['mood'] = 'Extreme Fear'
-                elif mmi_val < 45:
-                    mood_data['mood'] = 'Fear'
-                elif mmi_val < 55:
-                    mood_data['mood'] = 'Neutral'
-                elif mmi_val < 75:
-                    mood_data['mood'] = 'Greed'
-                else:
-                    mood_data['mood'] = 'Extreme Greed'
+            # Fallback mood detection
+            if not mood_data['mood'] and mood_data['mmi']:
+                try:
+                    mmi_val = float(mood_data['mmi'])
+                    if mmi_val < 25:
+                        mood_data['mood'] = 'Extreme Fear'
+                    elif mmi_val < 45:
+                        mood_data['mood'] = 'Fear'
+                    elif mmi_val < 55:
+                        mood_data['mood'] = 'Neutral'
+                    elif mmi_val < 75:
+                        mood_data['mood'] = 'Greed'
+                    else:
+                        mood_data['mood'] = 'Extreme Greed'
+                except:
+                    pass
             
             return mood_data
             
         except Exception as e:
-            return {'error': f'TickerTape fetch failed: {str(e)}'}
+            return {'error': f'TickerTape fetch failed: {str(e)}', 'source': 'TickerTape'}
     
     def fetch_goodreturns_data(self):
         """Fetch market mood data from GoodReturns"""
@@ -89,26 +81,67 @@ class MarketMoodBot:
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
+            page_text = soup.get_text()
             
-            mood_data = {}
+            mood_data = {'mmi': None, 'mood': None, 'source': 'GoodReturns'}
             
-            # Look for market mood related content
-            for element in soup.find_all(['div', 'span', 'p', 'h1', 'h2', 'h3']):
-                text = element.get_text(strip=True)
-                if any(keyword in text.lower() for keyword in ['market mood', 'fear', 'greed', 'sentiment', 'index']):
-                    mood_data['content'] = text
+            import re
+            
+            # Look for MMI value patterns in GoodReturns
+            mmi_patterns = [
+                r'MMI[:\s]+(\d+\.?\d*)',  # MMI: 47.01 or MMI 47.01
+                r'Market Mood Index[:\s]+(\d+\.?\d*)',  # Market Mood Index: 47.01
+                r'Index[:\s]+(\d+\.?\d*)',  # Index: 47.01
+                r'(\d+\.?\d+)\s*(?:MMI|Index)',  # 47.01 MMI or 47.01 Index
+            ]
+            
+            for pattern in mmi_patterns:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    mood_data['mmi'] = match.group(1)
                     break
             
-            # Extract numerical values
-            import re
-            numbers = re.findall(r'\b\d+(?:\.\d+)?%?\b', str(soup))
-            if numbers:
-                mood_data['values'] = numbers[:5]
+            # Look for mood indicators
+            mood_keywords = ['fear', 'greed', 'neutral', 'extreme fear', 'extreme greed']
+            for keyword in mood_keywords:
+                if keyword.lower() in page_text.lower():
+                    mood_data['mood'] = keyword.title()
+                    break
+            
+            # Try to find specific mood patterns
+            mood_patterns = [
+                r'(Extreme Fear|Fear|Neutral|Greed|Extreme Greed)',
+                r'Market is in\s+(\w+)',
+                r'Sentiment[:\s]+(\w+)',
+            ]
+            
+            for pattern in mood_patterns:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    mood_data['mood'] = match.group(1).title()
+                    break
+            
+            # Fallback mood calculation from MMI value
+            if mood_data['mmi'] and not mood_data['mood']:
+                try:
+                    mmi_val = float(mood_data['mmi'])
+                    if mmi_val < 25:
+                        mood_data['mood'] = 'Extreme Fear'
+                    elif mmi_val < 45:
+                        mood_data['mood'] = 'Fear'
+                    elif mmi_val < 55:
+                        mood_data['mood'] = 'Neutral'
+                    elif mmi_val < 75:
+                        mood_data['mood'] = 'Greed'
+                    else:
+                        mood_data['mood'] = 'Extreme Greed'
+                except:
+                    pass
             
             return mood_data
             
         except Exception as e:
-            return {'error': f'GoodReturns fetch failed: {str(e)}'}
+            return {'error': f'GoodReturns fetch failed: {str(e)}', 'source': 'GoodReturns'}
     
     def format_message(self, tickertape_data, goodreturns_data):
         """Format the market mood data into a nice Telegram message"""
@@ -117,17 +150,32 @@ class MarketMoodBot:
         message = f"📊 *Market Mood Index Update*\n"
         message += f"🕐 {current_time}\n\n"
         
-        # TickerTape Data - Clean format
+        # TickerTape Data
+        message += "🎯 *TickerTape Data:*\n"
         if 'error' in tickertape_data:
-            message += f"❌ Error: {tickertape_data['error']}\n"
+            message += f"❌ {tickertape_data['error']}\n"
         else:
             if tickertape_data.get('mmi') and tickertape_data.get('mood'):
-                message += f"📈 *MMI: {tickertape_data['mmi']}*\n"
-                message += f"🎯 *Mood: {tickertape_data['mood']}*\n"
+                message += f"📈 MMI: *{tickertape_data['mmi']}*\n"
+                message += f"😊 Mood: *{tickertape_data['mood']}*\n"
             else:
-                message += "❌ Could not extract MMI data from TickerTape\n"
+                message += "❌ Could not extract complete data\n"
         
-        message += "\n📍 Source: TickerTape Market Mood Index"
+        message += "\n"
+        
+        # GoodReturns Data
+        message += "🎯 *GoodReturns Data:*\n"
+        if 'error' in goodreturns_data:
+            message += f"❌ {goodreturns_data['error']}\n"
+        else:
+            if goodreturns_data.get('mmi') and goodreturns_data.get('mood'):
+                message += f"📈 MMI: *{goodreturns_data['mmi']}*\n"
+                message += f"😊 Mood: *{goodreturns_data['mood']}*\n"
+            else:
+                message += "❌ Could not extract complete data\n"
+        
+        message += "\n📍 *Sources:* TickerTape & GoodReturns"
+        message += "\n💡 *Note:* Different sources may show slight variations"
         
         return message
     
@@ -154,20 +202,23 @@ class MarketMoodBot:
         """Main execution function"""
         print(f"Starting Market Mood Bot at {datetime.now()}")
         
-        # Fetch data from TickerTape only
+        # Fetch data from both sources
         print("Fetching TickerTape data...")
         tickertape_data = self.fetch_tickertape_data()
         
+        print("Fetching GoodReturns data...")
+        goodreturns_data = self.fetch_goodreturns_data()
+        
         # Format and send message
-        message = self.format_message(tickertape_data, {})
+        message = self.format_message(tickertape_data, goodreturns_data)
         print("Sending Telegram message...")
         
         result = self.send_telegram_message(message)
         
         if result:
             print("✅ Message sent successfully!")
-            print(f"MMI: {tickertape_data.get('mmi', 'N/A')}")
-            print(f"Mood: {tickertape_data.get('mood', 'N/A')}")
+            print(f"TickerTape - MMI: {tickertape_data.get('mmi', 'N/A')}, Mood: {tickertape_data.get('mood', 'N/A')}")
+            print(f"GoodReturns - MMI: {goodreturns_data.get('mmi', 'N/A')}, Mood: {goodreturns_data.get('mood', 'N/A')}")
         else:
             print("❌ Failed to send message")
         
